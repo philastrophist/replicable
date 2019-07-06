@@ -6,9 +6,9 @@ from shutil import rmtree
 from setuptools import find_packages, setup, Command
 
 # Package meta-data.
-NAME = 'simspec'
+NAME = 'replicable'
 DESCRIPTION = 'Reproducible storage of gridded and stochastically generated simulated datasets'
-URL = 'https://github.com/philastrophist/simspec'
+URL = 'https://github.com/philastrophist/replicable'
 EMAIL = 'shaun.c.read@gmail.com'
 AUTHOR = 'philastrophist'
 
