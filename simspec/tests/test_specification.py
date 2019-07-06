@@ -13,18 +13,23 @@ except ImportError:
     pass
 
 
-from simspec.spec import Constant, Stochastic, Parameters
+from simspec.spec import Constant, Stochastic
 
-def test_Constantiterate_produces_parameters():
+def test_Constant_iterate_produces_parameters():
     c = Constant('a', [1, 2])
     result = c.iterate()
     assert isinstance(result, Parameters)
     assert isinstance(result['a'], int)
 
-def test_parameters_equality_comparison():
-    a = Parameters(a=1, b=2)
-    b = Parameters(a=1, b=2)
-    assert a == b
+
+@pytest.mark.parametrize(['a', 'b', 'evaluate_to'], [('b', [1, 2]), ('b', [1, 2]), True])
+@pytest.mark.parametrize(['a', 'b', 'evaluate_to'], [('b', [2, 2]), ('b', [1, 2]), False])
+@pytest.mark.parametrize(['a', 'b', 'evaluate_to'], [('b', [1., 2]), ('b', [1, 2]), False]) # dtype
+@pytest.mark.parametrize(['a', 'b', 'evaluate_to'], [('a', [1, 2]), ('b', [1, 2]), False])
+def test_parameters_equality_comparison(a, b, evaluate_to):
+    a = Constant(*a)
+    b = Constant(*b)
+    assert (a == b) is evaluate_to
 
 @pytest.mark.parametrize('seed', [0, 4, 14524])
 def test_stochastic_generates_random(seed):

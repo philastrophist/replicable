@@ -130,7 +130,7 @@ class Specification(object):
         with h5py.File(self.index_fname, 'w', libver='latest') as f:
             pass
         store = pd.HDFStore(self.index_fname, 'r+')
-        for paramset, hsh in tqdm(self._iterate(), total=self.size, desc='building index'):
+        for paramset, hsh in tqdm(self.iterate(), total=self.size, desc='building index'):
             df = pd.DataFrame(paramset)
             df['hash'] = hsh.hexdigest()
             store.append('index', df, format='table',  data_columns=True)
@@ -182,7 +182,7 @@ class Specification(object):
             hsh.update(os.path.basename(f).strip('.h5'))
         file_hash = hsh.hexdigest()
         hsh = xxhash.xxh64()
-        for paramset, hsh in tqdm(self._iterate(), total=self.size, desc='Hashing parameters', disable=not verbose):
+        for paramset, hsh in tqdm(self.iterate(), total=self.size, desc='Hashing parameters', disable=not verbose):
             hsh.update(hsh)
         param_hash = hsh.hexdigest()
         if file_hash != param_hash:
@@ -192,7 +192,7 @@ class Specification(object):
 
     def integrity_audit(self, test_existence=True, test_read=False, verbose=True):
         missing = []
-        for i, (paramset, hash) in enumerate(tqdm(self._iterate(), total=self.size, desc='Hashing parameters',
+        for i, (paramset, hash) in enumerate(tqdm(self.iterate(), total=self.size, desc='Hashing parameters',
                                                   disable=not verbose)):
             fname = os.path.join(self.directory, '{}.h5')
             if test_existence:
@@ -219,7 +219,7 @@ class Specification(object):
             for result, outname in zip(results, outnames):
                 outputs.require_dataset(outname, dtype=result.dtype, shape=result.shape, exact=True, data=result)
 
-    def _iterate(self):
+    def iterate(self):
         names, ranges = zip(*self.unpacked_gridded)
         prod = product(*ranges)
         griddeds = ({n: p for n, p in zip(names, ps)} for ps in prod)
@@ -231,7 +231,7 @@ class Specification(object):
                 yield parameters, dict_hash(parameters)
 
     def map(self, function, outnames, verbose=True):
-        for paramset, hsh in tqdm(self._iterate(), total=self.size, disable=not verbose):
+        for paramset, hsh in tqdm(self.iterate(), total=self.size, disable=not verbose):
             results = function(**paramset)
             assert len(results) == len(outnames), "Length of `outnames` must be the same as length of function output"
             self.save(results, outnames, paramset, hsh)
@@ -245,3 +245,89 @@ class Specification(object):
             return df[item]
         return self.read(df['hash'] + '.h5')
 
+
+class DelayedStream(object):
+    def __init__(self, streamz_object):
+        self.streamz_object = streamz_object
+
+    def evalutate(self):
+        pass
+
+
+
+class PersistedSpecification(object):
+    def __init__(self, directory, specification=None, seed=None, mode='a'):
+        """
+        :param directory: str
+        :param specification: specification object or None
+        :param seed: int or None
+        :param mode: read mode, 'a' append is the default
+        """
+        self.specification = specification
+        self.directory = directory
+        self.seed = seed
+        self.mode = mode
+
+    def __enter__(self):
+        """
+        1. if specification is not supplied, read index to acquire it
+        2. else, check compatibility of specification with the directory and seed
+        3. Initialise pipeline
+        """
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        begin execution of dask pipeline now, upon closing context
+        """
+        self.source.gather().sink(self.sink)  # sink being the function to store all the data
+        for param in self.specification.iterate():
+            self.source.emit(param)
+        self.source = None
+
+    def __getitem__(self, item):
+        """
+        Three cases:
+        * Item is a Parameter/representation (which are held in index, in memory)
+            >>> spec['param1']  # returns direct read from index (held in memory) - pd.Series indexed with filenames
+        * Item is a result key (held in individual files)
+            >>> spec['result1']  # returns read from files (filenames given by spec)
+        *Item is a boolean index mask generated from the above cases
+            `spec[(spec['a'] > 0) & (spec['b'] < 0)]` equates to:
+            >>> source = Stream().scatter()
+            >>> filt1 = source.map(lambda s: s['a']).map(lambda x: x > 0)
+            >>> filt2 = source.map(lambda s: s['b']).map(lambda x: x < 0)
+            >>> indexed = filt1.zip(filt2).map(lambda x: and_(*x)).zip(source).filter(lambda x: x[0]).map(lambda x: x[1])
+            >>> indexed.buffer(nworkers*2).gather().sink(print)
+
+        returns a DelayedStream() which is thin wrapper around a streamz object
+        """
+        return DelayedStream()
+
+
+    def assemble(self, *keys):
+        """
+        Copy `key` result from individual files to an aggregation file containing all results!
+        :param key:
+        :return:
+        """
+        for key in keys:
+            self.aggregate_maps[key] = self.result_maps[key].partition(npartitions).map(self.write_aggregates, key=key)
+
+
+    def map(self, function, name, innames, outnames, structures, descriptions):
+        m = self.source.map(function).map(self.write_results, keys=outnames, structures=structures, descriptions=descriptions)
+        self.result_maps[]
+
+
+    def aggregate(self, function, name, innames, outnames, structures, descriptions):
+        """
+        Store the result of a `function` which acts on the results from many individual parameter sets.
+        e.g. building a histogram requires `aggregate` since it requires all results
+        >>> spec.aggregate(np.hist, 'histogram', ['result1'], ['bins', 'count'])
+        :param function:
+        :param innames:
+        :param outnames:
+        :param structures:
+        :param descriptions:
+        :return:
+        """
