@@ -3,3 +3,4 @@ tqdm
 pandas
 numpy
 h5py==2.9
+streamz
