@@ -1,14 +1,8 @@
 from __future__ import print_function, unicode_literals, division, generators
-import os
 from functools import wraps
 from itertools import product
 from operator import itemgetter
 
-import dask
-import dask.bag as db
-import dask.dataframe as dd
-import h5py
-import pandas as pd
 import streamz
 import contextlib
 import numpy as np
@@ -138,7 +132,7 @@ class Specification(object):
 
     def __call__(self, directory, seed, mode='r'):
         """use a directory for storing simulations together with a seed to create them"""
-        return PersistedSpecification(directory, self, seed, mode)
+        return PersistedSpecificationIndex(directory, self, seed, mode)
 
 
     def iterate(self, seed=0):
@@ -337,7 +331,7 @@ class MaskStream(DelayedStream):
     pass
 
 
-class PersistedSpecification(object):
+class PersistedSpecificationIndex(object):
     def __init__(self, directory, specification=None, seed=None, mode='a', client=None):
         """
         1. if specification is not supplied, read index to acquire it
