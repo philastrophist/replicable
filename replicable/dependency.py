@@ -1,3 +1,4 @@
+from functools import reduce
 import networkx as nx
 
 
@@ -8,12 +9,12 @@ def _ipython_view_pydot(pdot):
     display(plt)
 
 
-def display_graph(g):
-    pdot = nx.drawing.nx_pydot.to_pydot(g)
+def display_graph(graph):
+    pdot = nx.drawing.nx_pydot.to_pydot(graph)
     for edge in pdot.get_edges():
         dest = edge.get_destination()
         src = edge.get_source()
-        data = g.get_edge_data(src, dest)
+        data = graph.get_edge_data(src, dest)
         if data is not None:
             if 'name' in data:
                 edge.set_label('{}'.format(data['name']))
@@ -34,7 +35,7 @@ def display_graph(g):
         return im
 
 
-def traverse(graph, stop_condition, source):
+def traverse_until(graph, stop_condition, source):
     branch = set()
     for child in graph.successors(source):
         predecessors = graph.predecessors(child)
@@ -42,7 +43,7 @@ def traverse(graph, stop_condition, source):
             branch.add(child)
     more = set()
     for child in branch:
-        more |= traverse(graph, stop_condition, child)
+        more |= traverse_until(graph, stop_condition, child)
     branch |= more
     if not stop_condition(graph, source):
         branch.add(source)
@@ -54,7 +55,7 @@ def exclude_aggregates(graph, node):
 
 
 def get_subgraph_until(graph, stop_condition, source):
-    nodes = traverse(graph, stop_condition, source)
+    nodes = traverse_until(graph, stop_condition, source)
     return nx.subgraph(graph, nodes).copy()
 
 
@@ -152,6 +153,40 @@ def validate_subgraphs(graph, subgraphs, source):
                             raise GraphPartitionValidationError(err.format(i, node, pre, j))
 
 
+def traverse_in_order(graph, source):
+    todo = [i for i in graph.nodes() if i != source]
+    done = [source]
+    path = []
+
+    while len(todo) > 0:
+        old_len = len(todo)
+        for node1 in done:
+            for node2 in todo:
+                accessible = node2 in graph.successors(node1)
+                fufilled = all(p in done for p in graph.predecessors(node2))
+                if accessible and fufilled:
+                    todo = [i for i in todo if i != node2]
+                    done.append(node2)
+                    path.append((node1, node2))
+        assert old_len != len(todo), "No changes occurred"
+    return path
+
+
+def combine_chain(chain, node):
+    if node in chain:
+        return chain
+    return chain + [node]
+
+
+def action_order(edges):
+    return reduce(combine_chain, edges, [])
+
+
+def edge_order(graph, source):
+    edges = traverse_in_order(graph, source)
+    return action_order([graph.get_edge_data(*e)['name'] for e in edges])
+
+
 if __name__ == '__main__':
     G = nx.DiGraph()
 
@@ -210,3 +245,5 @@ if __name__ == '__main__':
     validate_graph(G, 'source')
     subGs = ordered_subgraphs(G, 'source')
     validate_subgraphs(G, subGs, 'source')
+    execution_orders = [edge_order(g, 'source') for g in subGs]
+    print(execution_orders)

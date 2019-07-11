@@ -1,4 +1,5 @@
 from __future__ import print_function, unicode_literals, division, generators
+import networkx as nx
 from functools import wraps
 from itertools import product
 from operator import itemgetter
@@ -7,6 +8,7 @@ import streamz
 import contextlib
 import numpy as np
 import xxhash
+from replicable import dependency
 from tqdm import tqdm
 
 try:
@@ -385,6 +387,9 @@ class PersistedSpecificationIndex(object):
         return in_stream, in_index
 
     def __enter__(self):
+        self.graph = nx.DiGraph()
+        self.graph.add_node('source', type='source')
+        self.subgraphs = []
         self.result_streams = []
         self.error_streams = []
         self.assemble_streams = []
@@ -395,6 +400,13 @@ class PersistedSpecificationIndex(object):
         """
         begin execution of dask pipeline now, upon closing context
         """
+        self.partition_graph()
+        self.build_streams()
+        self.run_streams()
+        self.clear()
+
+
+    def build_streams(self):
         errors = streamz.zip(*self.error_streams).gather().sink(self.log_error)
         results = streamz.zip(*self.result_streams).gather().sink(self.index_result)
         assembles = streamz.zip(*self.assemble_streams).gather().sink(self.index_assemble)
@@ -402,6 +414,43 @@ class PersistedSpecificationIndex(object):
         for param in tqdm(self.specification.iterate(), total=len(self.specification)):
             self.source.emit(param)
         self.source = None
+
+
+    def add_node(self, action, node_type, function, name, innames, outnames, structures, descriptions, *args, **kwargs):
+        for outname in outnames:
+            self.graph.add_node(outname, type=node_type)
+            for inname in innames:
+                if inname in self.specification.names:
+                    src = 'source'
+                else:
+                    src = inname
+                self.graph.add_edge(src, outname, action=action, name=name, function=function,
+                                    structures=structures, descriptions=descriptions, args=args, kwargs=kwargs)
+
+
+    def construct_map(self, instream, edge):
+        outnames = ['{}/{}'.format(name, o) for o in outnames]
+        in_stream, in_index = self.verify_function(function, innames, outnames, structures)  # make sure its the same one as used before (raise if incompatible)
+        function = map_wrap(function)  # map_wrap handles errors, returning in form (results, errors[=None])
+
+        if not in_stream:
+            if not in_index:
+                result_and_errors = self.source.map(function)
+                result_and_errors.map(self.write_results, outnames=outnames, structures=structures, descriptions=descriptions)
+            else:
+                result_and_errors = self.source.map(self.read_results, names=outnames)
+
+            result, error = result_and_errors.pluck(0), result_and_errors.pluck(1)
+            for i, name in enumerate(outnames):
+                self.result_streams[name] = DelayedStream(result.pluck(i), name)
+            self.error_streams.append(error)  # record any errors using one process
+        return tuple([self.result_streams[i] for i in outnames])
+
+
+    def partition_graph(self):
+        dependency.validate_graph(self.graph, 'source')
+        self.subgraphs = dependency.ordered_subgraphs(self.graph, 'source')
+        dependency.validate_subgraphs(self.graph, self.subgraphs, 'source')
 
 
     def __getitem__(self, item):
