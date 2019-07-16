@@ -282,6 +282,8 @@ class PersistedSpecificationIndex(object):
     def construct_reduce(self, inputs, function):
         return streamz.zip(*inputs).accumulate(function)
 
+    def construct_filter(self, input):
+        return streamz.filter(input, lambda x: x)
 
     def __getitem__(self, item):
         """
