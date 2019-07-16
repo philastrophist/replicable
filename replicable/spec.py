@@ -1,15 +1,8 @@
 from __future__ import print_function, unicode_literals, division, generators
-import networkx as nx
-from functools import wraps
-from itertools import product
-from operator import itemgetter
-
-import streamz
 import contextlib
+from itertools import product
 import numpy as np
 import xxhash
-from replicable import dependency
-from tqdm import tqdm
 
 try:
     import itertools.imap as map
@@ -17,7 +10,7 @@ except ImportError:
     pass
 
 try:
-    import itertools.izip as map
+    import itertools.izip as zip
 except ImportError:
     pass
 
@@ -37,6 +30,7 @@ def dict_hash(d):
     stuff = sorted(''.join(list(map(str, d.keys())) + list(map(str, d.values()))))
     h.update(stuff)
     return h
+
 
 class Parameters(dict):
     @property
@@ -69,7 +63,7 @@ class Constant(Variable):
         self.values = np.atleast_1d(values)
 
     def __repr__(self):
-        return "<ConstantParameter({})>".format({n:v for n,v in zip(self.names, self.values)})
+        return "<ConstantParameter({})>".format({n:v for n, v in zip(self.names, self.values)})
 
     def __getitem__(self, item):
         try:
@@ -84,7 +78,6 @@ class Constant(Variable):
             return all((other[i] == self[i]) and (type(other[i]) == type(self[i])) for i in self.names)
         except KeyError:
             return False
-
 
     @property
     def shape(self):
@@ -265,270 +258,3 @@ class Specification(object):
     #         self.save(results, outnames, paramset, hsh)
 
 
-def map_wrap(func):
-    """
-    Return a function suitable for use with streams. The returned function will return [result, [Exception]]
-    :param func: function
-    :return: function
-    """
-    @wraps(func)
-    def inner(previous, *args, **kwargs):
-        if isinstance(previous[1], Exception):
-            return previous
-        try:
-            x = func(previous[0], *args, **kwargs)
-        except Exception as e:
-            return None, e
-        return x, None
-    return inner
-
-
-class DelayedStream(object):
-    def __init__(self, stream, name):
-        super(DelayedStream, self).__init__()
-        self.stream = stream
-        self.name = name
-
-    def to_stream(self):
-        return self.stream
-
-    def to_dask_futures(self):
-        raise NotImplementedError("Extracting dask futures not yet supported")
-
-    def __eq__(self, o):
-        return super(DelayedStream, self).__eq__(o)
-
-    def __ne__(self, o):
-        return super(DelayedStream, self).__ne__(o)
-
-    def __repr__(self):
-        return super(DelayedStream, self).__repr__()
-
-    def __and__(self, n):
-        return super(DelayedStream, self).__and__(n)
-
-    def __or__(self, n):
-        return super(DelayedStream, self).__or__(n)
-
-    def __xor__(self, n):
-        return super(DelayedStream, self).__xor__(n)
-
-    def __invert__(self):
-        return super(DelayedStream, self).__invert__()
-
-    def __lt__(self, x):
-        return super(DelayedStream, self).__lt__(x)
-
-    def __le__(self, x):
-        return super(DelayedStream, self).__le__(x)
-
-    def __gt__(self, x):
-        return super(DelayedStream, self).__gt__(x)
-
-    def __ge__(self, x):
-        return super(DelayedStream, self).__ge__(x)
-
-
-class MaskStream(DelayedStream):
-    pass
-
-
-class PersistedSpecificationIndex(object):
-    def __init__(self, directory, specification=None, seed=None, mode='a', client=None):
-        """
-        1. if specification is not supplied, read index to acquire it
-        2. else, check compatibility of specification with the directory and seed
-        3. Initialise pipeline
-        :param directory: str
-        :param specification: specification object or None
-        :param seed: int or None
-        :param mode: read mode, 'a' append is the default
-        """
-        self.directory = directory
-        self.seed = seed
-        self.mode = mode
-        self.client = client
-        if specification is None:
-            self.specification = self.build_specification_from_index()
-        else:
-            self.specification = specification
-            self.check_specfication_compatibility()
-
-        self.result_streams = []
-        self.error_streams = []
-        self.assemble_streams = []
-        self.aggregate_streams = []
-
-
-    def read_results(self, names):
-        if not recorded_as_valid:
-            raise AssertionError("Not recorded as valid")
-        return (results, errors)
-
-    def write_results(self, results, outnames, structures, descriptions):
-        try:
-            # record data
-            # record attr that data was written correctly
-            return (results, None)
-        except Exception as e:
-            return (results, e)
-
-
-    def verify_function(self, function, innames, outnames, structures):
-        """
-        return whether the function, innames and outnames have been used before either in_stream (this session)
-        or written to file (in_index).
-        The match must be exact in function, names, and structures, otherwise it will raise and Exception
-        :param innames:
-        :param outnames:
-        :param structures:
-        :return:
-        """
-        return in_stream, in_index
-
-    def __enter__(self):
-        self.graph = nx.DiGraph()
-        self.graph.add_node('source', type='source')
-        self.subgraphs = []
-        self.result_streams = []
-        self.error_streams = []
-        self.assemble_streams = []
-        self.aggregate_streams = []
-
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """
-        begin execution of dask pipeline now, upon closing context
-        """
-        self.partition_graph()
-        self.build_streams()
-        self.run_streams()
-        self.clear()
-
-
-    def build_streams(self):
-        errors = streamz.zip(*self.error_streams).gather().sink(self.log_error)
-        results = streamz.zip(*self.result_streams).gather().sink(self.index_result)
-        assembles = streamz.zip(*self.assemble_streams).gather().sink(self.index_assemble)
-        aggregations = streamz.zip(*self.aggregate_streams).gather().sink(self.index_aggregation)
-        for param in tqdm(self.specification.iterate(), total=len(self.specification)):
-            self.source.emit(param)
-        self.source = None
-
-
-    def add_node(self, action, node_type, function, name, innames, outnames, structures, descriptions, *args, **kwargs):
-        for outname in outnames:
-            self.graph.add_node(outname, type=node_type)
-            for inname in innames:
-                if inname in self.specification.names:
-                    src = 'source'
-                else:
-                    src = inname
-                self.graph.add_edge(src, outname, action=action, name=name, function=function,
-                                    structures=structures, descriptions=descriptions, args=args, kwargs=kwargs)
-
-
-    def construct_map(self, instream, edge):
-        outnames = ['{}/{}'.format(name, o) for o in outnames]
-        in_stream, in_index = self.verify_function(function, innames, outnames, structures)  # make sure its the same one as used before (raise if incompatible)
-        function = map_wrap(function)  # map_wrap handles errors, returning in form (results, errors[=None])
-
-        if not in_stream:
-            if not in_index:
-                result_and_errors = self.source.map(function)
-                result_and_errors.map(self.write_results, outnames=outnames, structures=structures, descriptions=descriptions)
-            else:
-                result_and_errors = self.source.map(self.read_results, names=outnames)
-
-            result, error = result_and_errors.pluck(0), result_and_errors.pluck(1)
-            for i, name in enumerate(outnames):
-                self.result_streams[name] = DelayedStream(result.pluck(i), name)
-            self.error_streams.append(error)  # record any errors using one process
-        return tuple([self.result_streams[i] for i in outnames])
-
-
-    def partition_graph(self):
-        dependency.validate_graph(self.graph, 'source')
-        self.subgraphs = dependency.ordered_subgraphs(self.graph, 'source')
-        dependency.validate_subgraphs(self.graph, self.subgraphs, 'source')
-
-
-    def __getitem__(self, item):
-        """
-        Three cases:
-        * Item is a Parameter/representation (which are held in index, in memory)
-            >>> spec['param1']  # returns direct read from index (held in memory) - pd.Series indexed with filenames
-        * Item is a result key (held in individual files)
-            >>> spec['result1']  # returns read from files (filenames given by spec)
-        *Item is a boolean index mask generated from the above cases
-            `spec[(spec['a'] > 0) & (spec['b'] < 0)]` equates to:
-            >>> source = Stream().scatter()
-            >>> filt1 = source.map(lambda s: s['a']).map(lambda x: x > 0)
-            >>> filt2 = source.map(lambda s: s['b']).map(lambda x: x < 0)
-            >>> indexed = filt1.zip(filt2).map(lambda x: and_(*x)).zip(source).filter(itemgetter(0)).pluck(1)
-            >>> indexed.buffer(nworkers*2).gather().sink(print)
-
-        returns a DelayedStream() which is thin wrapper around a streamz object
-        """
-        if isinstance(item, MaskStream):
-            raise NotImplementedError("Filtering by boolean mask is not yet supported")
-        elif item in self.assemble_streams:
-            return self.assemble_streams[item]
-        elif item in self.result_streams:
-            return self.result_streams[item]
-        elif item in self.aggregate_streams:
-            return self.aggregate_streams[item]
-        elif item in self.specification.names:
-            return DelayedStream(map_wrap(self.source.map(itemgetter(item))))
-        else:
-            raise KeyError("{} is not a result of a mapping/reduction/aggregation or a parameter")
-
-
-    def assemble(self, *keys):
-        """
-        Copy `key` result from individual files to an aggregation file containing all results!
-        :param key:
-        :return:
-        """
-        for key in keys:
-            self.aggregate_maps[key] = self.result_maps[key].partition(npartitions).map(self.write_aggregates, key=key)
-
-
-    def map(self, function, name, innames, outnames, structures, descriptions):
-        outnames = ['{}/{}'.format(name, o) for o in outnames]
-        in_stream, in_index = self.verify_function(function, innames, outnames, structures)  # make sure its the same one as used before (raise if incompatible)
-        function = map_wrap(function)  # map_wrap handles errors, returning in form (results, errors[=None])
-
-        if not in_stream:
-            if not in_index:
-                result_and_errors = self.source.map(function)
-                result_and_errors.map(self.write_results, outnames=outnames, structures=structures, descriptions=descriptions)
-            else:
-                result_and_errors = self.source.map(self.read_results, names=outnames)
-
-            result, error = result_and_errors.pluck(0), result_and_errors.pluck(1)
-            for i, name in enumerate(outnames):
-                self.result_streams[name] = DelayedStream(result.pluck(i), name)
-            self.error_streams.append(error)  # record any errors using one process
-        return tuple([self.result_streams[i] for i in outnames])
-
-
-
-    def aggregate(self, function, name, innames, outnames, structures, descriptions):
-        """
-        Store the result of a `function` which acts on the results from many individual parameter sets.
-        e.g. building a histogram requires `aggregate` since it requires all results (technically better to use reduce in this case though)
-        >>> spec.aggregate(np.hist, 'histogram', ['result1'], ['bins', 'count'])
-        :param function:
-        :param innames:
-        :param outnames:
-        :param structures:
-        :param descriptions:
-        :return:
-        """
-        outnames = ['{}/{}'.format(name, o) for o in outnames]
-
-
-    def reduce(self, function, name, innames, outnames, structures, descriptions):
-        outnames = ['{}/{}'.format(name, o) for o in outnames]
-        raise NotImplementedError("Reduce is not yet implemented")

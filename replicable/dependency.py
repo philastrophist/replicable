@@ -87,7 +87,7 @@ def partition_graph(graph, stop_condition, source):
             isolated = nx.subgraph(graph, [i]).copy()
             pre = next(graph.predecessors(i))
             attrs = graph.get_edge_data(pre, i)
-            isolated.add_node(source, type=graph.nodes()[source]['type'])
+            isolated.add_action(source, type=graph.nodes()[source]['type'])
             isolated.add_edge(source, i, **attrs)
             isolateds.append(isolated)
     order += isolateds
@@ -95,7 +95,7 @@ def partition_graph(graph, stop_condition, source):
     for root in find_roots(bad):
         pre = next(graph.predecessors(root))  # assumes it can only be created by one function
         attrs = graph.get_edge_data(pre, root)
-        bad.add_node(source, type='source')
+        bad.add_action(source, type='source')
         bad.add_edge(source, root, **attrs)
     try:
         order += partition_graph(bad, stop_condition, source)
