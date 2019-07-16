@@ -219,7 +219,7 @@ class PersistedSpecificationIndex(object):
         self.substreams = []
 
 
-    def add_action(self, action, node_type, function, name, innames, outnames, structures, descriptions, *args, **kwargs):
+    def add_task(self, action, node_type, function, name, innames, outnames, structures, descriptions):
         """
         Add map/reduce/aggregate/assemble etc to the spec
         """
@@ -232,7 +232,7 @@ class PersistedSpecificationIndex(object):
                 else:
                     src = inname
                 self.graph.add_edge(src, outname, action=action, name=name, function=function,
-                                    structures=structures, descriptions=descriptions)
+                                    structures=structures, descriptions=descriptions, outnames=outnames, innames=innames)
 
 
     def partition_graph(self):
@@ -259,14 +259,6 @@ class PersistedSpecificationIndex(object):
 
 
     def construct_stream_task(self, stream, graph, task):
-        """
-
-        :param stream:
-        :param graph:
-        :param task:
-        :return:
-        """
-
         inputs = [stream['results'][i] for i in task['innames']]
         function = wrap_task(task['function'], task['outnames'], partial(self.read_results, task['outnames']))
         # this now handles errors and reading completed results
@@ -316,14 +308,18 @@ class PersistedSpecificationIndex(object):
             raise KeyError("{} is not a result of a mapping/reduction/aggregation or a parameter")
 
 
+    def map(self, function, name, innames, outnames, structures, descriptions):
+        self.add_task('map', 'per-object', function, name, innames, outnames, structures, descriptions)
+
     def assemble(self, *keys):
         """
         Copy `key` result from individual files to an aggregation file containing all results!
         :param key:
         :return:
         """
-        for key in keys:
-            self.aggregate_maps[key] = self.result_maps[key].partition(npartitions).construct_map(self.write_aggregates, key=key)
+        self.reduce(self.write_assemble_reduction, 'assemble-{}'.format(keys), innames)
+        # for key in keys:
+        #     self.aggregate_maps[key] = self.result_maps[key].partition(npartitions).construct_map(self.write_aggregates, key=key)
 
 
 
