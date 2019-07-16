@@ -1,6 +1,7 @@
 from __future__ import print_function, unicode_literals, division, generators
 from functools import wraps, partial
 from operator import itemgetter
+import operator
 import networkx as nx
 import numpy as np
 import streamz
@@ -42,49 +43,53 @@ def wrap_task(func, outnames, reader):
 
 
 class DelayedStream(object):
-    def __init__(self, stream, name):
+    def __init__(self, index, name):
         super(DelayedStream, self).__init__()
-        self.stream = stream
+        assert isinstance(index, PersistedSpecificationIndex)
+        self.index = index
         self.name = name
 
-    def to_stream(self):
-        return self.stream
-
-    def to_dask_futures(self):
-        raise NotImplementedError("Extracting dask futures not yet supported")
+    def comparison(self, o, function):
+        name = '{}({}, {})'.format(function.__name__, self.name, o.name)
+        self.index.add_task('comparison', 'per-object', function, name, [self.name, o.name], [name], [(bool, tuple())],
+                            descriptions='')
+        return DelayedStream(self.index, name)
 
     def __eq__(self, o):
-        return super(DelayedStream, self).__eq__(o)
+        return self.comparison(o, operator.eq)
 
     def __ne__(self, o):
-        return super(DelayedStream, self).__ne__(o)
+        return self.comparison(o, operator.ne)
 
     def __repr__(self):
         return super(DelayedStream, self).__repr__()
 
     def __and__(self, n):
-        return super(DelayedStream, self).__and__(n)
+        return self.comparison(n, operator.and_)
 
     def __or__(self, n):
-        return super(DelayedStream, self).__or__(n)
+        return self.comparison(n, operator.or_)
 
     def __xor__(self, n):
-        return super(DelayedStream, self).__xor__(n)
+        return self.comparison(n, operator.xor)
 
     def __invert__(self):
-        return super(DelayedStream, self).__invert__()
+        name = '{}({})'.format(operator.invert.__name__, self.name)
+        self.index.add_task('comparison', 'per-object', operator.invert, name, [self.name], [name], [(bool, tuple())],
+                            descriptions='')
+        return DelayedStream(self.index, name)
 
     def __lt__(self, x):
-        return super(DelayedStream, self).__lt__(x)
+        return self.comparison(x, operator.lt)
 
     def __le__(self, x):
-        return super(DelayedStream, self).__le__(x)
+        return self.comparison(x, operator.le)
 
     def __gt__(self, x):
-        return super(DelayedStream, self).__gt__(x)
+        return self.comparison(x, operator.gt)
 
     def __ge__(self, x):
-        return super(DelayedStream, self).__ge__(x)
+        return self.comparison(x, operator.ge)
 
 
 class PersistedSpecificationIndex(object):
@@ -179,7 +184,7 @@ class PersistedSpecificationIndex(object):
         if store is False, this function will not be compared against, all processes will run again to reproduce this data
         :return:
         """
-        return in_stream, in_index
+        return
 
 
     def __enter__(self):
@@ -219,7 +224,7 @@ class PersistedSpecificationIndex(object):
         self.substreams = []
 
 
-    def add_task(self, action, node_type, function, name, innames, outnames, structures, descriptions):
+    def add_task(self, action, node_type, function, name, innames, outnames, structures, descriptions, store=True):
         """
         Add map/reduce/aggregate/assemble etc to the spec
         """
@@ -231,8 +236,8 @@ class PersistedSpecificationIndex(object):
                     src = 'source'
                 else:
                     src = inname
-                self.graph.add_edge(src, outname, action=action, name=name, function=function,
-                                    structures=structures, descriptions=descriptions, outnames=outnames, innames=innames)
+                self.graph.add_edge(src, outname, action=action, name=name, function=function, structures=structures,
+                                    descriptions=descriptions, outnames=outnames, innames=innames, store=store)
 
 
     def partition_graph(self):
@@ -267,7 +272,8 @@ class PersistedSpecificationIndex(object):
         output, error = result.pluck(-2), result.pluck(-1)
         for i, (outname, struct, desc) in enumerate(zip(task['outnames'], task['structures'], task['descriptions'])):
             stream['results'][outname] = output.pluck(i) # make available to other functions in the same partition
-            stream['writes'].append([outname, stream['results'][outname], struct, desc])  # queue for writing to index and individual files
+            if task['store']:
+                stream['writes'].append([outname, stream['results'][outname], struct, desc])  # queue for writing to index and individual files
         stream['errors'].append(error)
 
     def construct_map(self, inputs, function):
@@ -294,22 +300,32 @@ class PersistedSpecificationIndex(object):
 
         returns a DelayedStream() which is thin wrapper around a streamz object
         """
-        if isinstance(item, MaskStream):
-            raise NotImplementedError("Filtering by boolean mask is not yet supported")
-        elif item in self.assemble_streams:
-            return self.assemble_streams[item]
-        elif item in self.result_streams:
-            return self.result_streams[item]
-        elif item in self.aggregate_streams:
-            return self.aggregate_streams[item]
-        elif item in self.specification.names:
-            return DelayedStream(wrap_task(self.source.construct_map(itemgetter(item))))
+        if isinstance(item, DelayedStream):
+            name =  'filter-{}'.format(item.name)
+            self.filter(lambda x: x, name, [item.name])
+        elif isinstance(item, str):
+            return DelayedStream(self, item)
         else:
-            raise KeyError("{} is not a result of a mapping/reduction/aggregation or a parameter")
+            raise TypeError("Item must be either a name of a variable in the graph or a stream instance")
 
 
     def map(self, function, name, innames, outnames, structures, descriptions):
         self.add_task('map', 'per-object', function, name, innames, outnames, structures, descriptions)
+
+
+    def filter(self, function, name, innames, store=False, description=''):
+        if store:
+            outnames = [name]
+            structures = [(bool, 1)]
+        else:
+            outnames = []
+            structures = []
+        self.add_task('filter', 'per-object', function, name, innames, outnames, structures, descriptions=[description])
+
+
+    def reduce(self, function, name, innames, outnames, structures, descriptions):
+        self.add_task('reduce', 'reduction', function, name, innames, outnames, structures, descriptions)
+
 
     def assemble(self, *keys):
         """
@@ -317,10 +333,8 @@ class PersistedSpecificationIndex(object):
         :param key:
         :return:
         """
-        self.reduce(self.write_assemble_reduction, 'assemble-{}'.format(keys), innames)
-        # for key in keys:
-        #     self.aggregate_maps[key] = self.result_maps[key].partition(npartitions).construct_map(self.write_aggregates, key=key)
-
+        for key in keys:
+            self.reduce(self.write_assemble_reduction, 'assemble-{}'.format(key), keys, [], [], [])
 
 
     def aggregate(self, function, name, innames, outnames, structures, descriptions):
@@ -335,12 +349,4 @@ class PersistedSpecificationIndex(object):
         :param descriptions:
         :return:
         """
-        outnames = ['{}/{}'.format(name, o) for o in outnames]
-
-
-    def reduce(self, function, name, innames, outnames, structures, descriptions):
-        outnames = ['{}/{}'.format(name, o) for o in outnames]
-        raise NotImplementedError("Reduce is not yet implemented")
-
-
-
+        self.add_task('aggregate', 'agg', function, name, innames, outnames, structures, descriptions)
