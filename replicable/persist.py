@@ -1,4 +1,5 @@
 from __future__ import print_function, unicode_literals, division, generators
+import logging
 from functools import wraps, partial
 from operator import itemgetter
 import operator
@@ -42,18 +43,18 @@ def wrap_task(func, outnames, reader):
     return inner
 
 
-class DelayedStream(object):
+class GetItemStream(object):
     def __init__(self, index, name):
-        super(DelayedStream, self).__init__()
+        super(GetItemStream, self).__init__()
         assert isinstance(index, PersistedSpecificationIndex)
         self.index = index
         self.name = name
 
     def comparison(self, o, function):
         name = '{}({}, {})'.format(function.__name__, self.name, o.name)
-        self.index.add_task('comparison', 'per-object', function, name, [self.name, o.name], [name], [(bool, tuple())],
+        self.index.add_task('comparison', 'per-object', function, name, [self.name, o.name], [name], [(bool, 1)],
                             descriptions='')
-        return DelayedStream(self.index, name)
+        return GetItemStream(self.index, name)
 
     def __eq__(self, o):
         return self.comparison(o, operator.eq)
@@ -62,7 +63,7 @@ class DelayedStream(object):
         return self.comparison(o, operator.ne)
 
     def __repr__(self):
-        return super(DelayedStream, self).__repr__()
+        return super(GetItemStream, self).__repr__()
 
     def __and__(self, n):
         return self.comparison(n, operator.and_)
@@ -75,9 +76,9 @@ class DelayedStream(object):
 
     def __invert__(self):
         name = '{}({})'.format(operator.invert.__name__, self.name)
-        self.index.add_task('comparison', 'per-object', operator.invert, name, [self.name], [name], [(bool, tuple())],
+        self.index.add_task('comparison', 'per-object', operator.invert, name, [self.name], [name], [(bool, 1)],
                             descriptions='')
-        return DelayedStream(self.index, name)
+        return GetItemStream(self.index, name)
 
     def __lt__(self, x):
         return self.comparison(x, operator.lt)
@@ -160,6 +161,12 @@ class PersistedSpecificationIndex(object):
             self.specification = specification
             self.check_specfication_compatibility()
 
+        self.completed_table = self.read_completed()
+
+    def completed_results(self, hsh):
+        series = self.completed_table.loc[hsh]
+        return [key for key, value in series.items() if value]
+
 
     def read_results(self, names):
         if not recorded_as_valid:
@@ -202,18 +209,24 @@ class PersistedSpecificationIndex(object):
         self.clear()
 
 
+    def log_error(self, error):
+        logging.fatal(error, exc_info=True)
+
+
+    def index_result(self, outname, result, structure, description, task_type):
+        pass
+
     def sink_streams(self):
         for substream in self.substreams:
-            streamz.zip(*substream['errors']).gather().sink(self.log_error)
-            streamz.zip(*substream['results']).gather().sink(self.index_result)
-            streamz.zip(*substream['assembles']).gather().sink(self.index_assemble)
-            streamz.zip(*substream['aggregates']).gather().sink(self.index_aggregation)
+            streamz.union(*substream['errors']).gather().sink(self.log_error)
+            streamz.union(*substream['writes']).gather().sink(self.index_result)
 
 
     def run_streams(self):
         for substream in self.substreams:
-            for param in tqdm(self.specification.iterate(), total=len(self.specification)):
-                substream['source'].emit(param)
+            for hsh, param in tqdm(self.specification.iterate(), total=len(self.specification)):
+                completed = self.completed_results(hsh)
+                substream['source'].emit((hsh, completed, param, None))
 
 
     def clear(self):
@@ -256,7 +269,6 @@ class PersistedSpecificationIndex(object):
                 # TODO: implement aggregate calls
             else:
                 stream['source'] = streamz.Source().scatter()
-                stream['id'] = stream['source'].pluck('id')
                 for name in self.specification.names:  # separate parameters for easy handling
                     stream['results'][name] = stream['source'].pluck(name)
                 for task in chain:
@@ -273,17 +285,17 @@ class PersistedSpecificationIndex(object):
         for i, (outname, struct, desc) in enumerate(zip(task['outnames'], task['structures'], task['descriptions'])):
             stream['results'][outname] = output.pluck(i) # make available to other functions in the same partition
             if task['store']:
-                stream['writes'].append([outname, stream['results'][outname], struct, desc])  # queue for writing to index and individual files
+                stream['writes'].append([outname, stream['results'][outname], struct, desc, task['type']])  # queue for writing to index and individual files
         stream['errors'].append(error)
 
+    def gather_inputs(self, inputs):
+        return streamz.zip(*inputs)
+
     def construct_map(self, inputs, function):
-        return streamz.zip(*inputs).map(function)
+        return self.gather_inputs(inputs).map(function)
 
     def construct_reduce(self, inputs, function):
-        return streamz.zip(*inputs).accumulate(function)
-
-    def construct_filter(self, input):
-        return streamz.filter(input, lambda x: x)
+        return self.gather_inputs(inputs).accumulate(function)
 
     def __getitem__(self, item):
         """
@@ -302,11 +314,11 @@ class PersistedSpecificationIndex(object):
 
         returns a DelayedStream() which is thin wrapper around a streamz object
         """
-        if isinstance(item, DelayedStream):
+        if isinstance(item, GetItemStream):
             name =  'filter-{}'.format(item.name)
-            self.filter(lambda x: x, name, [item.name])
+            return self.filter(lambda x: x, name, [item.name])
         elif isinstance(item, str):
-            return DelayedStream(self, item)
+            return GetItemStream(self, item)
         else:
             raise TypeError("Item must be either a name of a variable in the graph or a stream instance")
 
@@ -322,11 +334,12 @@ class PersistedSpecificationIndex(object):
         else:
             outnames = []
             structures = []
-        self.add_task('filter', 'per-object', function, name, innames, outnames, structures, descriptions=[description])
+        self.add_task(self.construct_map, 'per-object', function, name, innames, outnames, structures, descriptions=[description])
+        return MaskedIndex(self, name)
 
 
     def reduce(self, function, name, innames, outnames, structures, descriptions):
-        self.add_task('reduce', 'reduction', function, name, innames, outnames, structures, descriptions)
+        self.add_task(self.construct_reduce, 'reduction', function, name, innames, outnames, structures, descriptions)
 
 
     def assemble(self, *keys):
@@ -351,4 +364,33 @@ class PersistedSpecificationIndex(object):
         :param descriptions:
         :return:
         """
-        self.add_task('aggregate', 'agg', function, name, innames, outnames, structures, descriptions)
+        self.add_task(self.construct_aggregate, 'agg', function, name, innames, outnames, structures, descriptions)
+
+
+class MaskedIndex(PersistedSpecificationIndex):
+    def __init__(self, directory, specification=None, seed=None, mode='a', client=None, mask_name=None):
+        super(MaskedIndex, self).__init__(directory, specification, seed, mode, client)
+        self.mask_name = mask_name
+
+    @classmethod
+    def from_index(cls, index, filter_name):
+        assert isinstance(index, PersistedSpecificationIndex)
+        subindex = cls(index.directory, index.specification, index.seed, index.mode, index.client, mask_name=filter_name)
+        subindex.graph = index.graph
+        subindex.subgraphs = index.substreams
+        subindex.execution_order= index.execution_order
+
+    def __enter__(self):
+        raise NotImplementedError("Contexts are not available to a masked index")
+
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        raise NotImplementedError("Contexts are not available to a masked index")
+
+    def add_task(self, action, node_type, function, name, innames, outnames, structures, descriptions, store=True):
+        innames.append(self.mask_name)
+        return super(MaskedIndex, self).add_task(action, node_type, function, name, innames, outnames, structures,
+                                                 descriptions, store)
+
+    def gather_inputs(self, inputs):
+        return streamz.zip(*inputs).filter(lambda x: x[-1]).map(lambda x: x[:-1])
